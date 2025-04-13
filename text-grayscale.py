@@ -11,11 +11,11 @@ font_file = "NotoSansSC-Regular.ttf"
 out_file = "grayscale.json"
 
 candidate_range = [
-    (0x3000, 0x303F),  # CJK Symbols and Punctuation
+    # (0x3000, 0x303F),  # CJK Symbols and Punctuation
     (0x4E00, 0x9FFF),  # CJK Unified Ideographs
     # (0x2000, 0x206F),  # General Punctuation
-    (0x2E80, 0x2EFF),  # CJK Radicals Supplement
-    (0x2FF0, 0x2FFF),  # Ideographic Description Characters
+    # (0x2E80, 0x2EFF),  # CJK Radicals Supplement
+    # (0x2FF0, 0x2FFF),  # Ideographic Description Characters
 ]
 render_size = 32
 
