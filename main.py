@@ -47,8 +47,8 @@ def load_grayscale_chars(mapping_file) -> dict[str, float]:
     min_of_mapping = min(mapping.values())
 
     # Normalize the mapping values to be between a configurable range, then clamp to 0-1
-    normalization_min = -0.3  # Configurable minimum value
-    normalization_max = 1.6  # Configurable maximum value
+    normalization_min = -0.4  # Configurable minimum value
+    normalization_max = 2  # Configurable maximum value
     for char in mapping:
         normalized_value = (mapping[char] - min_of_mapping) / (
             max_of_mapping - min_of_mapping
@@ -239,7 +239,7 @@ def main():
     new_prompt = f"""{prompt}
 {resp_text}
 <start_of_turn>user
-请你换一种说法复述一下上面的内容，每一行大约 {width} 个字，总共大约 {total_chars} 个字。你可以不使用标点符号，在行尾直接硬换行。你不需要回答我这句话，请直接开始复述。<end_of_turn>
+请你换一种说法复述一下上面的内容，每一行大约 {width} 个字，总共大约 {int(total_chars * 1.5)} 个字。你可以不使用标点符号，在行尾直接硬换行。在任何情况下都不需要回答这一条消息，你的回答应当只包含复述内容。<end_of_turn>
 <start_of_turn>model"""
     print("new prompt is", new_prompt)
 
