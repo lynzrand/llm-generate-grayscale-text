@@ -6,6 +6,8 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "freetype-py>=2.5.1",
+    "llama-cpp-python>=0.3.8",
     "numpy>=2.2.4",
+    "pillow>=11.2.1",
     "rich>=14.0.0",
 ]

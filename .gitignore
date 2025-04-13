@@ -11,3 +11,4 @@ wheels/
 
 grayscale.json
 NotoSansSC-Regular.ttf
+*.gguf
