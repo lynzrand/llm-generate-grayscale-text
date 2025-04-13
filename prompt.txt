@@ -1,4 +1,4 @@
 <start_of_turn>user
-请随便就大模型的发展说一段话。
+请随便就大模型的发展说一段话，三百字左右。
 <end_of_turn>
 <start_of_turn>model
