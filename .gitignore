@@ -9,6 +9,5 @@ wheels/
 # Virtual environments
 .venv
 
-grayscale.json
 NotoSansSC-Regular.ttf
 *.gguf
