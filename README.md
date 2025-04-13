@@ -42,3 +42,7 @@ uv run main.py --model gemma-3-4b-it-Q8_0.gguf badapple.jpg  --width 20
 ```
 
 模型可能会不合作。祝你好运。
+
+# 协议
+
+WTFPL
