@@ -1,10 +1,24 @@
+# Parts of this file comes from the LLaDA repository:, primarily the inference
+# part. No intent to infringe copyright, but do note that not all of this file
+# is under WTFPL.
+
 import sys
+import token
 from typing import cast
 from PIL import Image
 import os
 import numpy as np
 import argparse
 import llama_cpp
+
+import torch
+import numpy as np
+import torch.nn.functional as F
+
+import llada
+
+from transformers.models.auto.modeling_auto import AutoModel
+from transformers.models.auto.tokenization_auto import AutoTokenizer
 
 
 def parse_args():
@@ -14,11 +28,6 @@ def parse_args():
     parser.add_argument("image_path", type=str, help="Path to the image file")
     parser.add_argument(
         "--width", type=int, default=10, help="Width of the output image in characters"
-    )
-    parser.add_argument(
-        "--model",
-        type=str,
-        help="Path to the LLM model file",
     )
     parser.add_argument(
         "--mapping",
@@ -91,22 +100,172 @@ def matchness(mapping: dict[str, float], target: list[float], start_idx: int, s:
     # and calculate the average matchness
     target_idx = start_idx
     total_matchness = 0
-    stdev = 0.1
-    variance = stdev**2
     for c in s:
         target_value = target[target_idx]
         c_value = mapping[c]
 
         err = abs(target_value - c_value)
-        # Use a normal distribution-like function
-        matchness_value = np.exp(-((err**2) / (2 * variance)))
-        total_matchness += matchness_value
+        total_matchness += err**2  # Squared error
 
         target_idx += 1
 
     # Calculate the average matchness
     avg_match = total_matchness / len(s)
     return avg_match
+
+
+@torch.no_grad()
+def generate(
+    model,
+    tokenizer,
+    prompt,
+    # our params
+    image: np.ndarray,
+    mappings: dict[str, float],
+    # LLaDA params
+    steps=128,
+    temperature=0.0,
+    cfg_scale=0.0,
+    mask_id=126336,
+):
+    # Copyright (c) 2025 NieShenRuc
+    # This function comes from the LLaDA codebase, with custom mods
+    """
+    Args:
+        model: Mask predictor.
+        prompt: A tensor of shape (1, L).
+
+        image: The image to match grayscale with
+        mappings: The mapping of characters to grayscale values
+
+        steps_per_block: Sampling steps per each block.
+
+        temperature: Categorical distribution sampling temperature.
+        cfg_scale: Unsupervised classifier-free guidance scale.
+        remasking: Remasking strategy. 'low_confidence' or 'random'.
+        mask_id: The toke id of [MASK] is 126336.
+    """
+
+    image_grayscale_list = list(image.flatten())
+
+    # some utilities
+    eot_token = 126081
+    chars_target = len(image_grayscale_list)
+    vocab: dict[str, int] = tokenizer.get_vocab()
+    vocab_size = len(vocab)
+
+    # Create arrays for vocabulary length and reverse index
+    vocab_len = np.zeros(vocab_size, dtype=np.int32)
+    rev_vocab_index = [""] * vocab_size
+
+    # Populate arrays instead of dictionaries
+    for tok_str, tok_int in vocab.items():
+        # If the token is not contained in the mapping, skip it
+        not_in_mapping = False
+        for ch in tok_str:
+            if ch not in mappings:
+                not_in_mapping = True
+                break
+        if not_in_mapping:
+            continue
+
+        vocab_len[tok_int] = len(tok_str)
+        rev_vocab_index[tok_int] = tok_str
+
+    def iteratively_decode(logits):
+        """
+        Iteratively decode the current logits and decide which tokens to use
+        based on the grayscale values and the mapping.
+        """
+
+        # The number of chars we have decoded
+        decoded_len = 0
+        token_idx = 0
+
+        logits_len = logits.shape[1]
+
+        # Iterative decode
+        while decoded_len < chars_target and token_idx < logits_len:
+            # Modify the current token based on the grayscale values
+            for i in range(vocab_size):
+                matchness_value = matchness(
+                    mappings,
+                    image_grayscale_list,
+                    decoded_len,
+                    rev_vocab_index[i],
+                )
+                if matchness_value is not None:
+                    # Adjust the logits based on the matchness
+                    logits[0, token_idx, i] -= matchness_value * 10
+                else:
+                    # If the token is not in the mapping, set its logit to -inf
+                    logits[0, token_idx, i] = -np.inf
+
+            # Use the token with highest logit as our current token for the next step
+            this_token = int(torch.argmax(logits[token_idx]).item())
+            # Update the decoded length
+            decoded_len += vocab_len[this_token]
+            # Update the token index
+            token_idx += 1
+
+        # Other tokens past the decoded length should be masks
+        logits[:, token_idx:, :] = -np.inf
+        # Set the logits for the mask token to 0
+        logits[:, :, mask_id] = 0.0
+
+    # Max gen length should be (size of image) characters.
+    # min. 1 ch per token, plus LFs, so we be aggressive with the block length
+    gen_length = image.size + image.shape[0]
+
+    x = torch.full((1, prompt.shape[1] + gen_length), mask_id, dtype=torch.long).to(
+        model.device
+    )
+    x[:, : prompt.shape[1]] = prompt.clone()
+
+    prompt_index = x != mask_id
+
+    # We have only one block, fortunately
+    # This thing is all true
+    block_mask_index = torch.full((1, gen_length), True, dtype=torch.bool).to(
+        model.device
+    )
+    num_transfer_tokens = llada.get_num_transfer_tokens(block_mask_index, steps)
+    for i in range(steps):
+        print("Step", i + 1)
+
+        mask_index = x == mask_id
+        if cfg_scale > 0.0:
+            un_x = x.clone()
+            un_x[prompt_index] = mask_id
+            x_ = torch.cat([x, un_x], dim=0)
+            logits = model(x_).logits
+            logits, un_logits = torch.chunk(logits, 2, dim=0)
+            logits = un_logits + (cfg_scale + 1) * (logits - un_logits)
+        else:
+            logits = model(x).logits
+
+        print(logits.shape)
+
+        iteratively_decode(logits)
+
+        logits_with_noise = llada.add_gumbel_noise(logits, temperature=temperature)
+        x0 = torch.argmax(logits_with_noise, dim=-1)  # b, l
+
+        p = F.softmax(logits.to(torch.float64), dim=-1)
+        x0_p = torch.squeeze(
+            torch.gather(p, dim=-1, index=torch.unsqueeze(x0, -1)), -1
+        )  # b, l
+
+        x0 = torch.where(mask_index, x0, x)
+        confidence = torch.where(mask_index, x0_p, -np.inf)
+
+        transfer_index = torch.zeros_like(x0, dtype=torch.bool, device=x0.device)
+        for j in range(confidence.shape[0]):
+            _, select_index = torch.topk(confidence[j], k=num_transfer_tokens[j, i])
+            transfer_index[j, select_index] = True
+        x[transfer_index] = x0[transfer_index]
+
+    return x
 
 
 def infer(
@@ -198,6 +357,7 @@ def infer(
 
 
 def main():
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     args = parse_args()
 
     # Load the grayscale mapping
@@ -210,41 +370,47 @@ def main():
     image = image / 255.0  # Normalize the image to [0, 1]
     grayscale_values = image.flatten().tolist()
 
-    # Initialize the LLM model
-    model = llama_cpp.Llama(
-        model_path=args.model, logits_all=True, verbose=False, n_threads=12, n_ctx=4000
-    )
-
     # Get prompt
     with open(args.prompt, "r", encoding="utf-8") as f:
         prompt = f.read()
 
-    print("Input prompt is:", repr(prompt))
-
-    # First generate a string of natrual language text that responses to the prompt
-    # and then we will ask the model to rewrite it
-
-    initial_response = model.create_completion(
-        prompt, max_tokens=2000, stop=["<end_of_turn>model"], temperature=0.5
+    model = (
+        AutoModel.from_pretrained(
+            "GSAI-ML/LLaDA-8B-Instruct",
+            trust_remote_code=True,
+            torch_dtype=torch.bfloat16,
+        )
+        .to(device)
+        .eval()
     )
-    resp_text = initial_response["choices"][0]["text"]
+    tokenizer = AutoTokenizer.from_pretrained(
+        "GSAI-ML/LLaDA-8B-Instruct", trust_remote_code=True
+    )
 
-    print("Initial response:", resp_text)
+    # Add special tokens for the Instruct model. The Base model does not require the following two lines.
+    m = [
+        {"role": "user", "content": prompt},
+    ]
+    prompt = tokenizer.apply_chat_template(
+        m, add_generation_prompt=True, tokenize=False
+    )
 
-    # Now we will ask the model to rewrite the response in a way that matches the
-    # grayscale values of the image
-    width = args.width
-    total_chars = len(grayscale_values)
+    input_ids = tokenizer(prompt)["input_ids"]
+    input_ids = torch.tensor(input_ids).to(device).unsqueeze(0)
 
-    new_prompt = f"""{prompt}
-{resp_text}
-<start_of_turn>user
-请你换一种说法复述一下上面的内容，每一行大约 {width} 个字，总共大约 {int(total_chars * 1.5)} 个字。你可以不使用标点符号，在行尾直接硬换行。在任何情况下都不需要回答这一条消息，你的回答应当只包含复述内容。<end_of_turn>
-<start_of_turn>model"""
-    print("new prompt is", new_prompt)
+    out = generate(
+        model,
+        tokenizer,
+        input_ids,
+        image,
+        mappings=mapping,
+    )
 
-    out = infer(model, new_prompt, grayscale_values, mapping, args.width)
-    print(out)
+    print(
+        tokenizer.batch_decode(out[:, input_ids.shape[1] :], skip_special_tokens=True)[
+            0
+        ]
+    )
 
 
 if __name__ == "__main__":

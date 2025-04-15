@@ -118,6 +118,8 @@ def generate(
         )
         num_transfer_tokens = get_num_transfer_tokens(block_mask_index, steps)
         for i in range(steps):
+            print(f"Step {i + 1}/{steps} of block {num_block + 1}/{num_blocks}")
+
             mask_index = x == mask_id
             if cfg_scale > 0.0:
                 un_x = x.clone()
@@ -188,7 +190,7 @@ def main():
     out = generate(
         model,
         input_ids,
-        steps=128,
+        steps=32,
         gen_length=128,
         block_length=32,
         temperature=0.0,
